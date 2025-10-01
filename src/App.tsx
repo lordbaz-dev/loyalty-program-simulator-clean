@@ -1,0 +1,1177 @@
+import { useState, useEffect, useRef } from 'react';
+import { Chart as ChartJS, ArcElement, Tooltip, Legend } from 'chart.js';
+import { Doughnut } from 'react-chartjs-2';
+import html2pdf from 'html2pdf.js';
+import { SimulatorInputs, SimulationResults } from './components/loyalty-simulator/types';
+import { runSimulation, formatCurrency, formatNumber, getRiskLevel } from './components/loyalty-simulator/simulation-logic';
+import { Input } from './components/ui/input';
+import { Label } from './components/ui/label';
+import { Slider } from './components/ui/slider';
+import { Card } from './components/ui/card';
+import { Button } from './components/ui/button';
+import brevoLogo from './assets/brevo-logo-full.svg';
+import './index.css';
+
+ChartJS.register(ArcElement, Tooltip, Legend);
+
+const defaultInputs: SimulatorInputs = {
+  caAnnuel: 5000000,
+  nbClients: 25000,
+  panierMoyen: 80,
+  frequence: 2.5,
+  budgetPct: 3.0,
+  rewardsAllocation: 60
+};
+
+function App() {
+  const [inputs, setInputs] = useState<SimulatorInputs>(defaultInputs);
+  const [results, setResults] = useState<SimulationResults | null>(null);
+  const [isUpdating, setIsUpdating] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const simulationResults = runSimulation(inputs);
+    setResults(simulationResults);
+  }, [inputs]);
+
+  const handleInputChange = (field: keyof SimulatorInputs, value: number) => {
+    if (isUpdating) return;
+    setIsUpdating(true);
+
+    const newInputs = { ...inputs, [field]: value };
+
+    // Revenue consistency logic
+    if (field === 'caAnnuel') {
+      const currentCalculatedCA = inputs.nbClients * inputs.panierMoyen * inputs.frequence;
+      if (currentCalculatedCA > 0) {
+        const ratio = value / currentCalculatedCA;
+        newInputs.nbClients = Math.round(inputs.nbClients * ratio);
+      }
+    } else if (field === 'panierMoyen') {
+      newInputs.frequence = Number((inputs.caAnnuel / (inputs.nbClients * value)).toFixed(2));
+      newInputs.frequence = Math.max(0.1, Math.min(20, newInputs.frequence));
+    } else if (field === 'frequence') {
+      newInputs.panierMoyen = Math.round(inputs.caAnnuel / (inputs.nbClients * value));
+      newInputs.panierMoyen = Math.max(1, newInputs.panierMoyen);
+    } else if (field === 'nbClients') {
+      newInputs.frequence = Number((inputs.caAnnuel / (value * inputs.panierMoyen)).toFixed(2));
+      newInputs.frequence = Math.max(0.1, Math.min(20, newInputs.frequence));
+    }
+
+    setInputs(newInputs);
+    setTimeout(() => setIsUpdating(false), 0);
+  };
+
+  const handleExportPDF = async () => {
+    if (!results) return;
+
+    setIsExporting(true);
+    try {
+      // JSON structure for PDF
+      const pdfData = {
+        metadata: {
+          titre: "Loyalty Program ROI Simulation",
+          date: new Date().toLocaleDateString('en-US'),
+          generePar: "Brevo ROI Simulator"
+        },
+        parametres: {
+          caAnnuel: inputs.caAnnuel,
+          nbClients: inputs.nbClients,
+          panierMoyen: inputs.panierMoyen,
+          frequence: inputs.frequence,
+          budgetPct: inputs.budgetPct,
+          rewardsAllocation: inputs.rewardsAllocation
+        },
+        synthese: {
+          totalRevenus: results.totalRevenus,
+          roiMoyen: results.roiMoyen,
+          paybackMonths: results.paybackMonths,
+          successProba: results.successProba,
+          riskLevel: results.riskLevel,
+          totalInvestissement: results.projections.reduce((sum, p) => sum + p.rewards + p.marketing + p.operational + p.capex, 0)
+        },
+        projections: results.projections.map((p, i) => ({
+          annee: i + 1,
+          membres: p.membres,
+          tauxAdoption: p.tauxAdoption,
+          panier: p.panier,
+          frequence: p.frequence,
+          revenus: p.revenus,
+          costs: {
+            rewards: p.rewards,
+            marketing: p.marketing,
+            operational: p.operational,
+            capex: p.capex
+          },
+          profit: p.profit,
+          roi: p.roi
+        }))
+      };
+
+      // Create HTML for PDF
+      const pdfContent = `
+        <div style="font-family: Arial, sans-serif; padding: 20px; max-width: 800px; margin: 0 auto;">
+          <!-- Header -->
+          <div style="border-bottom: 3px solid #006A43; padding-bottom: 20px; margin-bottom: 30px;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <div>
+                <img src="${brevoLogo}" alt="Brevo" style="height: 32px; margin-bottom: 10px;" />
+                <h1 style="color: #006A43; font-size: 24px; margin: 10px 0 0 0;">Loyalty Program ROI Simulation</h1>
+              </div>
+              <div style="text-align: right; color: #666; font-size: 12px;">
+                <div>Date: ${pdfData.metadata.date}</div>
+                <div style="margin-top: 5px;">Generated by ${pdfData.metadata.generePar}</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Executive Summary -->
+          <div style="background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%); padding: 20px; border-radius: 10px; margin-bottom: 30px;">
+            <h2 style="color: #006A43; font-size: 20px; margin: 0 0 15px 0;">📊 Executive Summary</h2>
+            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px;">
+              <div style="background: white; padding: 15px; border-radius: 8px; text-align: center;">
+                <div style="font-size: 11px; color: #666; margin-bottom: 5px;">Total 3-Year Revenue</div>
+                <div style="font-size: 20px; font-weight: bold; color: #00B88D;">${formatCurrency(pdfData.synthese.totalRevenus)}</div>
+              </div>
+              <div style="background: white; padding: 15px; border-radius: 8px; text-align: center;">
+                <div style="font-size: 11px; color: #666; margin-bottom: 5px;">Average ROI</div>
+                <div style="font-size: 20px; font-weight: bold; color: #00B88D;">${pdfData.synthese.roiMoyen >= 0 ? '+' : ''}${pdfData.synthese.roiMoyen.toFixed(0)}%</div>
+              </div>
+              <div style="background: white; padding: 15px; border-radius: 8px; text-align: center;">
+                <div style="font-size: 11px; color: #666; margin-bottom: 5px;">Payback Period</div>
+                <div style="font-size: 20px; font-weight: bold; color: #00B88D;">${pdfData.synthese.paybackMonths} months</div>
+              </div>
+            </div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-top: 15px;">
+              <div style="background: white; padding: 15px; border-radius: 8px; text-align: center;">
+                <div style="font-size: 11px; color: #666; margin-bottom: 5px;">Success Probability</div>
+                <div style="font-size: 20px; font-weight: bold; color: #00B88D;">${pdfData.synthese.successProba.toFixed(0)}%</div>
+              </div>
+              <div style="background: white; padding: 15px; border-radius: 8px; text-align: center;">
+                <div style="font-size: 11px; color: #666; margin-bottom: 5px;">Risk Level</div>
+                <div style="font-size: 20px; font-weight: bold; color: ${pdfData.synthese.riskLevel === 'Low' ? '#4caf50' : pdfData.synthese.riskLevel === 'Medium' ? '#ff9800' : '#f44336'};">${pdfData.synthese.riskLevel}</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Simulation Parameters -->
+          <div style="margin-bottom: 30px;">
+            <h2 style="color: #006A43; font-size: 18px; margin: 0 0 15px 0; border-bottom: 2px solid #e0e0e0; padding-bottom: 10px;">⚙️ Simulation Parameters</h2>
+            <div style="background: #f8f9fa; padding: 15px; border-radius: 8px;">
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 13px;">
+                <div><strong>Annual Revenue:</strong> ${formatCurrency(pdfData.parametres.caAnnuel)}</div>
+                <div><strong>Number of Customers:</strong> ${formatNumber(pdfData.parametres.nbClients)}</div>
+                <div><strong>Average Basket:</strong> ${formatCurrency(pdfData.parametres.panierMoyen)}</div>
+                <div><strong>Purchase Frequency/Year:</strong> ${pdfData.parametres.frequence.toFixed(1)}</div>
+                <div><strong>Program Budget:</strong> ${pdfData.parametres.budgetPct.toFixed(1)}% of Revenue</div>
+                <div><strong>Rewards Allocation:</strong> ${pdfData.parametres.rewardsAllocation}%</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 3-Year Projections -->
+          <div style="margin-bottom: 30px;">
+            <h2 style="color: #006A43; font-size: 18px; margin: 0 0 15px 0; border-bottom: 2px solid #e0e0e0; padding-bottom: 10px;">📈 3-Year Projections</h2>
+            <table style="width: 100%; border-collapse: collapse; font-size: 12px;">
+              <thead>
+                <tr style="background: #f8f9fa;">
+                  <th style="border: 1px solid #ddd; padding: 10px; text-align: left;">Metric</th>
+                  <th style="border: 1px solid #ddd; padding: 10px; text-align: center;">Year 1</th>
+                  <th style="border: 1px solid #ddd; padding: 10px; text-align: center;">Year 2</th>
+                  <th style="border: 1px solid #ddd; padding: 10px; text-align: center;">Year 3</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td style="border: 1px solid #ddd; padding: 8px;"><strong>Active Members</strong></td>
+                  ${pdfData.projections.map(p => `<td style="border: 1px solid #ddd; padding: 8px; text-align: center;">${formatNumber(p.membres)}</td>`).join('')}
+                </tr>
+                <tr>
+                  <td style="border: 1px solid #ddd; padding: 8px;">Adoption Rate</td>
+                  ${pdfData.projections.map(p => `<td style="border: 1px solid #ddd; padding: 8px; text-align: center;">${p.tauxAdoption.toFixed(0)}%</td>`).join('')}
+                </tr>
+                <tr>
+                  <td style="border: 1px solid #ddd; padding: 8px;">Average Basket</td>
+                  ${pdfData.projections.map(p => `<td style="border: 1px solid #ddd; padding: 8px; text-align: center;">${formatCurrency(p.panier)}</td>`).join('')}
+                </tr>
+                <tr>
+                  <td style="border: 1px solid #ddd; padding: 8px;">Purchase Frequency/Year</td>
+                  ${pdfData.projections.map(p => `<td style="border: 1px solid #ddd; padding: 8px; text-align: center;">${p.frequence.toFixed(1)}</td>`).join('')}
+                </tr>
+                <tr style="background: #e8f5e9;">
+                  <td style="border: 1px solid #ddd; padding: 8px;"><strong>Incremental Revenue</strong></td>
+                  ${pdfData.projections.map(p => `<td style="border: 1px solid #ddd; padding: 8px; text-align: center; color: #4caf50; font-weight: bold;">+${formatCurrency(p.revenus)}</td>`).join('')}
+                </tr>
+                <tr>
+                  <td style="border: 1px solid #ddd; padding: 8px;">Rewards Budget</td>
+                  ${pdfData.projections.map(p => `<td style="border: 1px solid #ddd; padding: 8px; text-align: center; color: #f44336;">-${formatCurrency(p.costs.rewards)}</td>`).join('')}
+                </tr>
+                <tr>
+                  <td style="border: 1px solid #ddd; padding: 8px;">Marketing Budget</td>
+                  ${pdfData.projections.map(p => `<td style="border: 1px solid #ddd; padding: 8px; text-align: center; color: #f44336;">-${formatCurrency(p.costs.marketing)}</td>`).join('')}
+                </tr>
+                <tr>
+                  <td style="border: 1px solid #ddd; padding: 8px;">Operational Costs</td>
+                  ${pdfData.projections.map(p => `<td style="border: 1px solid #ddd; padding: 8px; text-align: center; color: #f44336;">-${formatCurrency(p.costs.operational)}</td>`).join('')}
+                </tr>
+                <tr>
+                  <td style="border: 1px solid #ddd; padding: 8px;">Technical CAPEX</td>
+                  ${pdfData.projections.map(p => `<td style="border: 1px solid #ddd; padding: 8px; text-align: center; color: #f44336;">-${formatCurrency(p.costs.capex)}</td>`).join('')}
+                </tr>
+                <tr style="background: #e3f2fd;">
+                  <td style="border: 1px solid #ddd; padding: 8px;"><strong>Net Profit</strong></td>
+                  ${pdfData.projections.map(p => `<td style="border: 1px solid #ddd; padding: 8px; text-align: center; font-weight: bold; color: ${p.profit >= 0 ? '#4caf50' : '#f44336'};">${p.profit >= 0 ? '+' : ''}${formatCurrency(p.profit)}</td>`).join('')}
+                </tr>
+                <tr>
+                  <td style="border: 1px solid #ddd; padding: 8px;"><strong>ROI</strong></td>
+                  ${pdfData.projections.map(p => `<td style="border: 1px solid #ddd; padding: 8px; text-align: center; font-weight: bold;">${p.roi >= 0 ? '+' : ''}${p.roi.toFixed(0)}%</td>`).join('')}
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Financial Analysis -->
+          <div style="margin-bottom: 30px; page-break-before: always;">
+            <h2 style="color: #006A43; font-size: 18px; margin: 0 0 15px 0; border-bottom: 2px solid #e0e0e0; padding-bottom: 10px;">💼 Year 1 Budget Breakdown</h2>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+              <div style="background: #ffcdd2; padding: 15px; border-radius: 8px;">
+                <div style="font-weight: bold; margin-bottom: 5px;">Rewards/Customer Debt</div>
+                <div style="font-size: 18px; font-weight: bold; color: #006A43;">${formatCurrency(pdfData.projections[0].costs.rewards)}</div>
+                <div style="font-size: 11px; color: #666; margin-top: 5px;">${pdfData.parametres.rewardsAllocation}% of program budget</div>
+              </div>
+              <div style="background: #c8e6c9; padding: 15px; border-radius: 8px;">
+                <div style="font-weight: bold; margin-bottom: 5px;">Marketing & Activation</div>
+                <div style="font-size: 18px; font-weight: bold; color: #006A43;">${formatCurrency(pdfData.projections[0].costs.marketing)}</div>
+                <div style="font-size: 11px; color: #666; margin-top: 5px;">${100 - pdfData.parametres.rewardsAllocation}% of program budget</div>
+              </div>
+              <div style="background: #bbdefb; padding: 15px; border-radius: 8px;">
+                <div style="font-weight: bold; margin-bottom: 5px;">Operational Costs</div>
+                <div style="font-size: 18px; font-weight: bold; color: #006A43;">${formatCurrency(pdfData.projections[0].costs.operational)}</div>
+                <div style="font-size: 11px; color: #666; margin-top: 5px;">10% of program budget</div>
+              </div>
+              <div style="background: #ffccbc; padding: 15px; border-radius: 8px;">
+                <div style="font-weight: bold; margin-bottom: 5px;">Technical CAPEX</div>
+                <div style="font-size: 18px; font-weight: bold; color: #006A43;">${formatCurrency(pdfData.projections[0].costs.capex)}</div>
+                <div style="font-size: 11px; color: #666; margin-top: 5px;">Platform investment</div>
+              </div>
+            </div>
+            <div style="background: #a8e6b5; padding: 15px; border-radius: 8px; margin-top: 15px; font-weight: bold; font-size: 16px;">
+              <div style="display: flex; justify-content: space-between;">
+                <span>TOTAL YEAR 1 INVESTMENT</span>
+                <span>${formatCurrency(pdfData.projections[0].costs.rewards + pdfData.projections[0].costs.marketing + pdfData.projections[0].costs.operational + pdfData.projections[0].costs.capex)}</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Recommendations -->
+          <div style="margin-bottom: 30px;">
+            <h2 style="color: #006A43; font-size: 18px; margin: 0 0 15px 0; border-bottom: 2px solid #e0e0e0; padding-bottom: 10px;">💡 Recommendations</h2>
+            <div style="background: #fff3cd; padding: 15px; border-radius: 8px; border-left: 4px solid #ffc107;">
+              <ul style="margin: 0; padding-left: 20px; font-size: 13px; line-height: 1.6;">
+                ${pdfData.synthese.riskLevel === 'Low' ?
+                  '<li>Your configuration presents low risk. Consider slightly increasing the budget to maximize impact.</li>' :
+                  pdfData.synthese.riskLevel === 'Medium' ?
+                  '<li>Your configuration is balanced. Maintain this investment level for optimal ROI.</li>' :
+                  '<li>Your configuration presents high risk. Consider reducing the budget or optimizing the allocation.</li>'}
+                ${pdfData.parametres.rewardsAllocation >= 50 && pdfData.parametres.rewardsAllocation <= 70 ?
+                  '<li>Your rewards/marketing allocation is optimal (50-70%).</li>' :
+                  '<li>Consider rebalancing your allocation toward 50-70% rewards for optimal impact.</li>'}
+                ${pdfData.synthese.paybackMonths <= 18 ?
+                  '<li>Your payback period is excellent (&lt;18 months).</li>' :
+                  '<li>The payback period could be improved by optimizing budget allocation.</li>'}
+                <li>Monitor adoption and engagement rates closely to adjust your strategy.</li>
+                <li>Invest in communication and activation to maximize program participation.</li>
+              </ul>
+            </div>
+          </div>
+
+          <!-- Footer -->
+          <div style="margin-top: 40px; padding-top: 20px; border-top: 2px solid #e0e0e0; text-align: center; font-size: 11px; color: #666;">
+            <p>This document was automatically generated by the Brevo ROI Simulator.</p>
+            <p style="margin-top: 10px;">For more information or personalized analysis, contact our sales team.</p>
+            <p style="margin-top: 10px; font-weight: bold; color: #00B88D;">www.brevo.com</p>
+          </div>
+        </div>
+      `;
+
+      // Create temporary element for PDF
+      const tempDiv = document.createElement('div');
+      tempDiv.innerHTML = pdfContent;
+      document.body.appendChild(tempDiv);
+
+      const opt = {
+        margin: [10, 10, 10, 10],
+        filename: `brevo-roi-simulation-${new Date().toISOString().split('T')[0]}.pdf`,
+        image: { type: 'jpeg', quality: 0.98 },
+        html2canvas: { scale: 2, useCORS: true, logging: false },
+        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+      };
+
+      await html2pdf().set(opt).from(tempDiv).save();
+
+      // Cleanup
+      document.body.removeChild(tempDiv);
+    } catch (error) {
+      console.error('Error generating PDF:', error);
+      alert('Error generating PDF. Please try again.');
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  const risk = getRiskLevel(inputs.budgetPct);
+  const caCalculated = `${formatCurrency(inputs.caAnnuel)} = ${formatNumber(inputs.nbClients)} × ${formatCurrency(inputs.panierMoyen)} × ${inputs.frequence.toFixed(1)}`;
+
+  // Chart data
+  const chartData = results ? {
+    labels: ['Rewards/Debt', 'Marketing', 'Operational', 'Technical CAPEX'],
+    datasets: [{
+      data: [
+        results.projections[0].rewards,
+        results.projections[0].marketing,
+        results.projections[0].operational,
+        results.projections[0].capex
+      ],
+      backgroundColor: ['#ef5350', '#81c784', '#64b5f6', '#ff8a65']
+    }]
+  } : null;
+
+  const chartOptions = {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: {
+        position: 'bottom' as const,
+        labels: {
+          boxWidth: 15,
+          padding: 10,
+          font: { size: 11 }
+        }
+      },
+      tooltip: {
+        callbacks: {
+          label: function(context: any) {
+            const label = context.label || '';
+            const value = formatCurrency(context.parsed);
+            const total = context.dataset.data.reduce((a: number, b: number) => a + b, 0);
+            const percentage = ((context.parsed / total) * 100).toFixed(1);
+            return `${label}: ${value} (${percentage}%)`;
+          }
+        }
+      }
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-green-50 to-blue-50">
+      {/* Header */}
+      <header className="bg-white shadow-sm border-b">
+        <div className="max-w-[1400px] mx-auto px-5 py-4 flex justify-between items-center">
+          <img src={brevoLogo} alt="Brevo" className="h-8" />
+          <h1 className="text-2xl font-bold text-center flex-1" style={{ color: '#006A43' }}>
+            Loyalty Program ROI Simulator
+          </h1>
+          <div className="flex gap-2">
+            <Button variant="outline" className="border-2 border-[#00B88D] text-[#00B88D] hover:bg-green-50">
+              Talk to Sales
+            </Button>
+            <Button className="bg-[#00B88D] hover:bg-[#009973]">
+              Free Trial
+            </Button>
+          </div>
+        </div>
+      </header>
+
+      <div ref={containerRef} className="max-w-[1400px] mx-auto p-5">
+        <div className="grid grid-cols-1 lg:grid-cols-[320px_1fr] gap-7 items-start">
+          {/* Sidebar */}
+          <div className="lg:sticky lg:top-5 lg:max-h-[calc(100vh-40px)] lg:overflow-y-auto">
+            <Card className="p-6">
+              <h2 className="text-base font-bold mb-5 flex items-center gap-2" style={{ color: '#006A43' }}>
+                <span>⚙️</span> Settings
+              </h2>
+
+              {/* Business Section */}
+              <div className="mb-6">
+                <h3 className="text-sm font-semibold text-gray-600 mb-4 flex items-center gap-2">
+                  <span>🏢</span> Business
+                </h3>
+
+                <div className="space-y-4">
+                  <div>
+                    <Label className="text-sm">Annual Revenue</Label>
+                    <div className="relative">
+                      <Input
+                        type="number"
+                        value={inputs.caAnnuel}
+                        onChange={(e) => handleInputChange('caAnnuel', Number(e.target.value))}
+                        step={100000}
+                        className="pr-8"
+                      />
+                      <span className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm pointer-events-none">$</span>
+                    </div>
+                  </div>
+
+                  <div>
+                    <Label className="text-sm flex items-center gap-1">
+                      Number of Customers
+                      <span className="inline-block w-3.5 h-3.5 bg-gray-600 text-white rounded-full text-center text-[10px] leading-[14px] cursor-help" title="Modify this field to automatically adjust revenue">ℹ</span>
+                    </Label>
+                    <Input
+                      type="number"
+                      value={inputs.nbClients}
+                      onChange={(e) => handleInputChange('nbClients', Number(e.target.value))}
+                      step={1000}
+                    />
+                  </div>
+
+                  <div>
+                    <Label className="text-sm flex items-center gap-1">
+                      Current Average Basket
+                      <span className="inline-block w-3.5 h-3.5 bg-gray-600 text-white rounded-full text-center text-[10px] leading-[14px] cursor-help" title="Other metrics will adjust to maintain revenue">ℹ</span>
+                    </Label>
+                    <div className="relative">
+                      <Input
+                        type="number"
+                        value={inputs.panierMoyen}
+                        onChange={(e) => handleInputChange('panierMoyen', Number(e.target.value))}
+                        step={5}
+                        className="pr-8"
+                      />
+                      <span className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm pointer-events-none">$</span>
+                    </div>
+                  </div>
+
+                  <div>
+                    <Label className="text-sm flex items-center gap-1">
+                      Purchase Frequency/Year
+                      <span className="inline-block w-3.5 h-3.5 bg-gray-600 text-white rounded-full text-center text-[10px] leading-[14px] cursor-help" title="Other metrics will adjust to maintain revenue">ℹ</span>
+                    </Label>
+                    <Input
+                      type="number"
+                      value={inputs.frequence}
+                      onChange={(e) => handleInputChange('frequence', Number(e.target.value))}
+                      step={0.1}
+                      min={0.1}
+                    />
+                  </div>
+
+                  <div className="bg-green-50 p-3 rounded-md">
+                    <div className="text-[11px] text-gray-600 leading-relaxed">
+                      <strong>💡 Revenue Consistency:</strong><br />
+                      Revenue = Customers × Average Basket × Frequency<br />
+                      <span className="text-[#2c5f3f] font-semibold">{caCalculated}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Program Section */}
+              <div className="mb-6 pt-6 border-t">
+                <h3 className="text-sm font-semibold text-gray-600 mb-4 flex items-center gap-2">
+                  <span>📊</span> Loyalty Program
+                </h3>
+
+                <div className="space-y-5">
+                  <div>
+                    <Label className="text-sm flex items-center gap-1">
+                      Program Budget (% of Revenue)
+                      <span className="inline-block w-3.5 h-3.5 bg-gray-600 text-white rounded-full text-center text-[10px] leading-[14px] cursor-help" title="Higher budget increases both risk and potential">ℹ</span>
+                    </Label>
+                    <Slider
+                      value={[inputs.budgetPct]}
+                      onValueChange={([v]) => handleInputChange('budgetPct', v)}
+                      min={1.5}
+                      max={10}
+                      step={0.1}
+                      className="my-2"
+                    />
+                    <div className="flex justify-between text-[11px] text-gray-400 mb-2">
+                      <span>1.5% (Conservative)</span>
+                      <span>10% (Aggressive)</span>
+                    </div>
+                    <div className="text-center">
+                      <span className="text-sm font-semibold text-[#2c5f3f]">{inputs.budgetPct.toFixed(1)}%</span>
+                      <span className={`ml-2 px-2 py-0.5 rounded-xl text-[10px] font-semibold ${
+                        risk.level === 'Low' ? 'bg-green-100 text-green-800' :
+                        risk.level === 'Medium' ? 'bg-yellow-100 text-yellow-800' :
+                        'bg-red-100 text-red-800'
+                      }`}>
+                        {risk.level} Risk
+                      </span>
+                    </div>
+                  </div>
+
+                  <div>
+                    <Label className="text-sm flex items-center gap-1">
+                      Rewards vs Marketing Allocation
+                      <span className="inline-block w-3.5 h-3.5 bg-gray-600 text-white rounded-full text-center text-[10px] leading-[14px] cursor-help" title="More rewards = direct impact. More marketing = better adoption">ℹ</span>
+                    </Label>
+                    <Slider
+                      value={[inputs.rewardsAllocation]}
+                      onValueChange={([v]) => handleInputChange('rewardsAllocation', v)}
+                      min={40}
+                      max={80}
+                      step={5}
+                      className="my-2"
+                    />
+                    <div className="flex justify-between text-[11px] text-gray-400 mb-2">
+                      <span>40% Rewards</span>
+                      <span>80% Rewards</span>
+                    </div>
+                    <div className="text-center text-sm font-semibold text-[#2c5f3f]">
+                      {inputs.rewardsAllocation}% Rewards / {100 - inputs.rewardsAllocation}% Marketing
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Impact Card */}
+              {results && (
+                <div className="bg-gradient-to-br from-green-100 to-green-200 p-4 rounded-lg mt-5">
+                  <div className="text-xs text-gray-600 mb-1">💰 Projected Impact (Year 3)</div>
+                  <div className="text-xl font-bold text-[#00B88D] mb-2">
+                    ROI: {results.projections[2].roi >= 0 ? '+' : ''}{results.projections[2].roi.toFixed(0)}%
+                  </div>
+                  <div className="text-[11px] text-gray-600 leading-relaxed">
+                    Success Probability: <strong>{results.successProba.toFixed(0)}%</strong><br />
+                    Risk Factor: <strong>{results.riskLevel}</strong>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2 mt-3">
+                    <div className="bg-white/60 p-2 rounded text-[11px]">
+                      <div className="text-gray-600">Average Basket</div>
+                      <div className="text-sm font-bold text-[#00B88D]">+{results.projections[2].impactPanier.toFixed(0)}%</div>
+                    </div>
+                    <div className="bg-white/60 p-2 rounded text-[11px]">
+                      <div className="text-gray-600">Frequency</div>
+                      <div className="text-sm font-bold text-[#00B88D]">+{results.projections[2].impactFreq.toFixed(0)}%</div>
+                    </div>
+                    <div className="bg-white/60 p-2 rounded text-[11px]">
+                      <div className="text-gray-600">Adoption Rate</div>
+                      <div className="text-sm font-bold text-[#00B88D]">{results.projections[2].tauxAdoption.toFixed(0)}%</div>
+                    </div>
+                    <div className="bg-white/60 p-2 rounded text-[11px]">
+                      <div className="text-gray-600">Tech CAPEX</div>
+                      <div className="text-sm font-bold text-[#00B88D]">{formatCurrency(results.capexAnnuel)}</div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </Card>
+          </div>
+
+          {/* Main Content */}
+          <div className="space-y-7">
+            {results && (
+              <>
+                {/* ROI Projections */}
+                <Card className="p-6">
+                  <h2 className="text-base font-bold mb-5 flex items-center gap-2" style={{ color: '#006A43' }}>
+                    <span>📈</span> Detailed ROI Projections (3 Years)
+                  </h2>
+
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b-2 border-gray-200">
+                          <th className="text-left py-3 px-2 bg-gray-50 font-semibold text-gray-600 text-xs">Metric</th>
+                          <th className="text-center py-3 px-2 bg-gray-50 font-semibold text-gray-600 text-xs">Year 1</th>
+                          <th className="text-center py-3 px-2 bg-gray-50 font-semibold text-gray-600 text-xs">Year 2</th>
+                          <th className="text-center py-3 px-2 bg-gray-50 font-semibold text-gray-600 text-xs">Year 3</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr className="border-b">
+                          <td className="py-3 px-2 font-semibold">Active Members</td>
+                          {results.projections.map((p, i) => (
+                            <td key={i} className="text-center py-3 px-2">{formatNumber(p.membres)}</td>
+                          ))}
+                        </tr>
+                        <tr className="border-b">
+                          <td className="py-3 px-2">Adoption Rate</td>
+                          {results.projections.map((p, i) => (
+                            <td key={i} className="text-center py-3 px-2">{p.tauxAdoption.toFixed(0)}%</td>
+                          ))}
+                        </tr>
+                        <tr className="border-b">
+                          <td className="py-3 px-2">Average Basket</td>
+                          {results.projections.map((p, i) => (
+                            <td key={i} className="text-center py-3 px-2">{formatCurrency(p.panier)}</td>
+                          ))}
+                        </tr>
+                        <tr className="border-b">
+                          <td className="py-3 px-2">Purchase Frequency/Year</td>
+                          {results.projections.map((p, i) => (
+                            <td key={i} className="text-center py-3 px-2">{p.frequence.toFixed(1)}</td>
+                          ))}
+                        </tr>
+                        <tr className="border-b">
+                          <td className="py-3 px-2">Revenue/Program Customer</td>
+                          {results.projections.map((p, i) => (
+                            <td key={i} className="text-center py-3 px-2">{formatCurrency(p.caClient)}</td>
+                          ))}
+                        </tr>
+                        <tr className="border-b bg-green-50">
+                          <td className="py-3 px-2 font-semibold">Incremental Revenue</td>
+                          {results.projections.map((p, i) => (
+                            <td key={i} className="text-center py-3 px-2 font-semibold text-green-600">+{formatCurrency(p.revenus)}</td>
+                          ))}
+                        </tr>
+                        <tr className="border-b">
+                          <td className="py-3 px-2">Rewards Budget</td>
+                          {results.projections.map((p, i) => (
+                            <td key={i} className="text-center py-3 px-2 text-red-600">-{formatCurrency(p.rewards)}</td>
+                          ))}
+                        </tr>
+                        <tr className="border-b">
+                          <td className="py-3 px-2">Marketing Budget</td>
+                          {results.projections.map((p, i) => (
+                            <td key={i} className="text-center py-3 px-2 text-red-600">-{formatCurrency(p.marketing)}</td>
+                          ))}
+                        </tr>
+                        <tr className="border-b">
+                          <td className="py-3 px-2">Operational Costs</td>
+                          {results.projections.map((p, i) => (
+                            <td key={i} className="text-center py-3 px-2 text-red-600">-{formatCurrency(p.operational)}</td>
+                          ))}
+                        </tr>
+                        <tr className="border-b">
+                          <td className="py-3 px-2">Technical CAPEX</td>
+                          {results.projections.map((p, i) => (
+                            <td key={i} className="text-center py-3 px-2 text-red-600">-{formatCurrency(p.capex)}</td>
+                          ))}
+                        </tr>
+                        <tr className="border-b bg-blue-50">
+                          <td className="py-3 px-2 font-bold">Net Profit</td>
+                          {results.projections.map((p, i) => (
+                            <td key={i} className={`text-center py-3 px-2 font-bold ${p.profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                              {p.profit >= 0 ? '+' : ''}{formatCurrency(p.profit)}
+                            </td>
+                          ))}
+                        </tr>
+                        <tr>
+                          <td className="py-3 px-2 font-bold">ROI</td>
+                          {results.projections.map((p, i) => (
+                            <td key={i} className="text-center py-3 px-2 font-bold">
+                              {p.roi >= 0 ? '+' : ''}{p.roi.toFixed(0)}%
+                            </td>
+                          ))}
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* Highlight Boxes */}
+                  <div className="flex justify-center gap-5 mt-8 flex-wrap">
+                    <div className="bg-green-100 p-5 rounded-lg text-center min-w-[170px]">
+                      <div className="text-2xl font-bold text-[#00B88D]">{formatCurrency(results.totalRevenus)}</div>
+                      <div className="text-[11px] text-gray-600 mt-1.5">Total 3-Year Incremental Revenue</div>
+                    </div>
+                    <div className="bg-green-100 p-5 rounded-lg text-center min-w-[170px]">
+                      <div className="text-2xl font-bold text-[#00B88D]">{results.roiMoyen >= 0 ? '+' : ''}{results.roiMoyen.toFixed(0)}%</div>
+                      <div className="text-[11px] text-gray-600 mt-1.5">3-Year Average ROI</div>
+                    </div>
+                    <div className="bg-orange-100 p-5 rounded-lg text-center min-w-[170px]">
+                      <div className="text-2xl font-bold text-[#00B88D]">{results.paybackMonths} months</div>
+                      <div className="text-[11px] text-gray-600 mt-1.5">Payback Period</div>
+                    </div>
+                    <div className="bg-blue-100 p-5 rounded-lg text-center min-w-[170px]">
+                      <div className="text-2xl font-bold text-[#00B88D]">{results.successProba.toFixed(0)}%</div>
+                      <div className="text-[11px] text-gray-600 mt-1.5">Success Probability</div>
+                    </div>
+                  </div>
+
+                  {/* Detailed Projections */}
+                  <div className="mt-8">
+                    <h3 className="text-sm font-semibold border-b-2 pb-2 mb-4">📊 Annual Projection Details</h3>
+
+                    {['Launch', 'Growth', 'Maturity'].map((phase, i) => (
+                      <div key={i} className="bg-gray-50 p-4 rounded-lg mb-3">
+                        <div className="font-semibold text-[#00B88D] mb-2 text-sm">Year {i + 1} - {phase} Phase</div>
+                        <div className="grid grid-cols-2 gap-2 text-xs">
+                          <div className="flex justify-between p-2 bg-white rounded">
+                            <span>Marketing Investment</span>
+                            <strong>{formatCurrency(results.projections[i].marketing)}</strong>
+                          </div>
+                          <div className="flex justify-between p-2 bg-white rounded">
+                            <span>Basket Impact</span>
+                            <strong>+{results.projections[i].impactPanier.toFixed(0)}%</strong>
+                          </div>
+                          <div className="flex justify-between p-2 bg-white rounded">
+                            <span>Frequency Impact</span>
+                            <strong>+{results.projections[i].impactFreq.toFixed(0)}%</strong>
+                          </div>
+                          <div className="flex justify-between p-2 bg-white rounded">
+                            <span>Retention Rate</span>
+                            <strong>{results.projections[i].retention.toFixed(0)}%</strong>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </Card>
+
+                {/* Financial Analysis */}
+                <Card className="p-6">
+                  <h2 className="text-base font-bold mb-5 flex items-center gap-2" style={{ color: '#006A43' }}>
+                    <span>💼</span> Financial Analysis & Budget Allocation
+                  </h2>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                    {/* Cost Breakdown */}
+                    <div>
+                      <h3 className="text-sm font-semibold mb-4">Annual Investment Breakdown (Year 1)</h3>
+
+                      <div className="space-y-3">
+                        <div className="bg-red-100 p-3 rounded-lg">
+                          <div className="flex justify-between items-center mb-1">
+                            <span className="font-semibold text-sm">Rewards/Customer Debt</span>
+                            <span className="font-bold">{formatCurrency(results.projections[0].rewards)}</span>
+                          </div>
+                          <div className="text-[11px] text-gray-600 leading-relaxed">
+                            Points, cashback, immediate rewards - Direct impact on basket and frequency
+                          </div>
+                          <div className="text-[10px] text-gray-500 mt-1">{inputs.rewardsAllocation}% of program budget</div>
+                        </div>
+
+                        <div className="bg-green-100 p-3 rounded-lg">
+                          <div className="flex justify-between items-center mb-1">
+                            <span className="font-semibold text-sm">Marketing & Activation</span>
+                            <span className="font-bold">{formatCurrency(results.projections[0].marketing)}</span>
+                          </div>
+                          <div className="text-[11px] text-gray-600 leading-relaxed">
+                            Sign-up campaigns, emails, SMS, member activation - Impact on adoption rate
+                          </div>
+                          <div className="text-[10px] text-gray-500 mt-1">{100 - inputs.rewardsAllocation}% of program budget</div>
+                        </div>
+
+                        <div className="bg-blue-100 p-3 rounded-lg">
+                          <div className="flex justify-between items-center mb-1">
+                            <span className="font-semibold text-sm">Operational Costs</span>
+                            <span className="font-bold">{formatCurrency(results.projections[0].operational)}</span>
+                          </div>
+                          <div className="text-[11px] text-gray-600 leading-relaxed">
+                            Customer support, program management, request processing
+                          </div>
+                          <div className="text-[10px] text-gray-500 mt-1">10% of program budget</div>
+                        </div>
+
+                        <div className="bg-orange-100 p-3 rounded-lg">
+                          <div className="flex justify-between items-center mb-1">
+                            <span className="font-semibold text-sm">Technical CAPEX</span>
+                            <span className="font-bold">{formatCurrency(results.capexAnnuel)}</span>
+                          </div>
+                          <div className="text-[11px] text-gray-600 leading-relaxed">
+                            Brevo Platform - {inputs.caAnnuel >= 10000000
+                              ? `Base $20k + $${Math.floor(inputs.caAnnuel / 10000000) * 10}k (Revenue > $10M)`
+                              : 'Base $20k (Revenue < $10M)'}
+                          </div>
+                          <div className="text-[10px] text-gray-500 mt-1">Annual technical investment</div>
+                        </div>
+
+                        <div className="bg-green-200 p-4 rounded-lg font-bold">
+                          <div className="flex justify-between items-center">
+                            <span>TOTAL YEAR 1 INVESTMENT</span>
+                            <span>{formatCurrency(
+                              results.projections[0].rewards +
+                              results.projections[0].marketing +
+                              results.projections[0].operational +
+                              results.capexAnnuel
+                            )}</span>
+                          </div>
+                          <div className="text-[10px] font-normal text-gray-700 mt-1">
+                            {((results.projections[0].rewards + results.projections[0].marketing + results.projections[0].operational + results.capexAnnuel) / inputs.caAnnuel * 100).toFixed(2)}% of revenue
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Chart */}
+                    <div>
+                      <h3 className="text-sm font-semibold mb-4">Budget Distribution (Year 1)</h3>
+                      <div className="h-[280px]">
+                        {chartData && <Doughnut data={chartData} options={chartOptions} />}
+                      </div>
+                    </div>
+                  </div>
+                </Card>
+
+                {/* Risk Analysis */}
+                <Card className="p-6">
+                  <h2 className="text-base font-bold mb-5 flex items-center gap-2">
+                    <span>⚠️</span> Risk Analysis & Success Probability
+                  </h2>
+
+                  <div className="bg-gray-50 p-5 rounded-lg mb-5">
+                    <h4 className="font-semibold mb-4 text-[#2c5f3f]">Risk Factors</h4>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+                      <div>
+                        <strong>Investment Level:</strong>
+                        <div className="text-gray-600 mt-1">
+                          {inputs.budgetPct <= 2.5 ? 'Conservative (<2.5% Revenue) - Minimal risk' :
+                           inputs.budgetPct <= 4 ? 'Medium (2.5-4% Revenue) - Optimal balance' :
+                           inputs.budgetPct <= 6 ? 'Ambitious (4-6% Revenue) - Moderate risk' :
+                           'Aggressive (>6% Revenue) - High risk'}
+                        </div>
+                      </div>
+                      <div>
+                        <strong>Rewards Allocation:</strong>
+                        <div className="text-gray-600 mt-1">
+                          {inputs.rewardsAllocation < 50 ? 'Marketing Focus - Priority adoption' :
+                           inputs.rewardsAllocation <= 70 ? `Balanced (${inputs.rewardsAllocation}%) - Good mix` :
+                           'Rewards Focus - Maximum impact'}
+                        </div>
+                      </div>
+                      <div>
+                        <strong>Projected Adoption Rate:</strong>
+                        <div className="text-gray-600 mt-1">
+                          {results.projections[2].tauxAdoption.toFixed(0)}% year 3 - {results.projections[2].tauxAdoption > 30 ? 'Ambitious' : results.projections[2].tauxAdoption > 20 ? 'Realistic' : 'Conservative'}
+                        </div>
+                      </div>
+                      <div>
+                        <strong>Expected ROI:</strong>
+                        <div className="text-gray-600 mt-1">
+                          +{results.roiMoyen.toFixed(0)}% average - {results.roiMoyen > 100 ? 'Excellent' : results.roiMoyen > 50 ? 'Good' : 'Needs improvement'}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="bg-green-50 p-5 rounded-lg">
+                    <h4 className="font-semibold mb-3 text-[#2c5f3f]">
+                      📊 Success Probability: {results.successProba.toFixed(0)}%
+                    </h4>
+                    <div className="text-sm text-gray-600 leading-relaxed space-y-2">
+                      <p>
+                        Based on industry standards (63% of satisfactory programs), your configuration presents
+                        a success probability of {results.successProba.toFixed(0)}%.
+                      </p>
+                      <p><strong>Positive factors:</strong></p>
+                      <ul className="list-disc ml-5 space-y-1">
+                        <li>{inputs.budgetPct >= 2 && inputs.budgetPct <= 6 ? '✓' : '⚠'} Program budget {inputs.budgetPct >= 2 && inputs.budgetPct <= 6 ? 'optimal (2-6% of revenue)' : 'needs adjustment'}</li>
+                        <li>{inputs.rewardsAllocation >= 50 && inputs.rewardsAllocation <= 70 ? '✓' : '⚠'} {inputs.rewardsAllocation >= 50 && inputs.rewardsAllocation <= 70 ? 'Balanced rewards/marketing allocation' : 'Allocation needs rebalancing'}</li>
+                        <li>✓ Projections based on real data (+39% basket, +73% frequency)</li>
+                      </ul>
+                    </div>
+                  </div>
+                </Card>
+
+                {/* Industry Stats */}
+                <Card className="p-6">
+                  <h2 className="text-base font-bold mb-5 flex items-center gap-2">
+                    <span>💡</span> Why Invest in Loyalty?
+                  </h2>
+
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    <div className="bg-gray-50 p-5 rounded-lg text-center">
+                      <div className="text-3xl font-bold text-[#00B88D]">+39%</div>
+                      <div className="text-[11px] text-gray-600 mt-2 leading-tight">
+                        Average basket when using rewards (LoyaltyLion 2024)
+                      </div>
+                    </div>
+                    <div className="bg-gray-50 p-5 rounded-lg text-center">
+                      <div className="text-3xl font-bold text-[#00B88D]">+73%</div>
+                      <div className="text-[11px] text-gray-600 mt-2 leading-tight">
+                        Purchase frequency active members vs non-members
+                      </div>
+                    </div>
+                    <div className="bg-gray-50 p-5 rounded-lg text-center">
+                      <div className="text-3xl font-bold text-[#00B88D]">12-18%</div>
+                      <div className="text-[11px] text-gray-600 mt-2 leading-tight">
+                        Annual revenue growth members vs non-members
+                      </div>
+                    </div>
+                    <div className="bg-gray-50 p-5 rounded-lg text-center">
+                      <div className="text-3xl font-bold text-[#00B88D]">63%</div>
+                      <div className="text-[11px] text-gray-600 mt-2 leading-tight">
+                        Satisfactory programs (generate positive ROI)
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="text-center mt-4 text-[11px] text-gray-400">
+                    Sources: LoyaltyLion 2024, McKinsey, BCG 2024, OpenLoyalty
+                  </div>
+                </Card>
+
+                {/* CTA Section */}
+                <Card className="p-8 text-center">
+                  <h2 className="text-lg font-bold mb-2">Ready to launch your loyalty program?</h2>
+                  <p className="text-gray-600 text-sm mb-5">
+                    Discover how Brevo can transform your loyalty strategy
+                  </p>
+                  <div className="flex justify-center gap-4 flex-wrap">
+                    <Button className="bg-[#00B88D] hover:bg-[#009973] px-6 py-3 text-base">
+                      Request a Quote
+                    </Button>
+                    <Button
+                      variant="outline"
+                      className="border-2 border-[#00B88D] text-[#00B88D] hover:bg-green-50 px-6 py-3 text-base"
+                      onClick={handleExportPDF}
+                      disabled={isExporting}
+                    >
+                      {isExporting ? 'Generating...' : 'Export this Simulation'}
+                    </Button>
+                  </div>
+                </Card>
+
+                {/* Summary */}
+                <Card className="p-6">
+                  <h2 className="text-base font-bold mb-5 flex items-center gap-2">
+                    <span>📊</span> Executive Summary
+                  </h2>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6 text-center">
+                    <div>
+                      <div className="text-xs text-gray-600 mb-2">Total Investment (3 years)</div>
+                      <div className="text-2xl font-bold text-[#00B88D]">
+                        {formatCurrency(
+                          results.projections.reduce((sum, p) => sum + p.rewards + p.marketing + p.operational + p.capex, 0)
+                        )}
+                      </div>
+                      <div className="text-[11px] text-gray-400 mt-1">
+                        {((results.projections.reduce((sum, p) => sum + p.rewards + p.marketing + p.operational + p.capex, 0) / (inputs.caAnnuel * 3)) * 100).toFixed(2)}% of average revenue
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-gray-600 mb-2">Incremental Revenue (3 years)</div>
+                      <div className="text-2xl font-bold text-[#00B88D]">
+                        {formatCurrency(results.totalRevenus)}
+                      </div>
+                      <div className="text-[11px] text-gray-400 mt-1">Average ROI +{results.roiMoyen.toFixed(0)}%</div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-gray-600 mb-2">Risk Level</div>
+                      <div className="text-2xl font-bold">
+                        <span className={`px-3 py-1 rounded-xl text-base ${
+                          results.riskLevel === 'Low' ? 'bg-green-100 text-green-800' :
+                          results.riskLevel === 'Medium' ? 'bg-yellow-100 text-yellow-800' :
+                          'bg-red-100 text-red-800'
+                        }`}>
+                          {results.riskLevel}
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-gray-400 mt-1">
+                        Success probability: {results.successProba.toFixed(0)}%
+                      </div>
+                    </div>
+                  </div>
+                </Card>
+
+                {/* Methodology & Sources Section */}
+                <Card className="p-6">
+                  <h2 className="text-base font-bold mb-5 flex items-center gap-2">
+                    <span>🔬</span> Methodology & Sources
+                  </h2>
+
+                  <div className="space-y-6">
+                    {/* Overview */}
+                    <div>
+                      <h3 className="text-sm font-semibold mb-3 text-[#00B88D]">Methodology Overview</h3>
+                      <p className="text-sm text-gray-600 leading-relaxed">
+                        This simulator uses an analytical approach based on real market data and benchmark studies
+                        to project the ROI of a loyalty program over 3 years. Calculations account for the progressive
+                        evolution of customer behaviors, inflation, and technical and operational costs.
+                      </p>
+                    </div>
+
+                    {/* Key Calculations */}
+                    <div className="bg-gray-50 p-4 rounded-lg">
+                      <h3 className="text-sm font-semibold mb-3 text-[#00B88D]">📐 Key Calculations</h3>
+                      <div className="space-y-4 text-sm">
+                        <div>
+                          <h4 className="font-semibold mb-2">1. Incremental Revenue</h4>
+                          <div className="bg-white p-3 rounded border-l-4 border-green-500">
+                            <code className="text-xs font-mono block mb-2">
+                              Revenue = Active Members × (Program Customer Revenue - Current Customer Revenue)
+                            </code>
+                            <p className="text-xs text-gray-600">
+                              Program Customer Revenue is calculated by applying impacts on average basket and purchase
+                              frequency based on your rewards/marketing budget allocation.
+                            </p>
+                          </div>
+                        </div>
+
+                        <div>
+                          <h4 className="font-semibold mb-2">2. Basket & Frequency Impact</h4>
+                          <div className="bg-white p-3 rounded border-l-4 border-blue-500">
+                            <code className="text-xs font-mono block mb-2">
+                              Basket Impact = (10 + Rewards% × 13) × Budget Multiplier × Year Multiplier
+                            </code>
+                            <code className="text-xs font-mono block mb-2">
+                              Frequency Impact = (8 + Rewards% × 16) × Budget Multiplier × Year Multiplier
+                            </code>
+                            <p className="text-xs text-gray-600 mt-2">
+                              <strong>Year Multiplier:</strong> Year 1 = 0.5x, Year 2 = 0.75x, Year 3 = 1.0x (progressive adoption)<br/>
+                              <strong>Budget Multiplier:</strong> Min(1.5, Budget% / 4) - Higher budget yields stronger impact
+                            </p>
+                          </div>
+                        </div>
+
+                        <div>
+                          <h4 className="font-semibold mb-2">3. Adoption Rate</h4>
+                          <div className="bg-white p-3 rounded border-l-4 border-purple-500">
+                            <code className="text-xs font-mono block mb-2">
+                              Adoption = (15 + Marketing% × 10 + Budget% × 1.5) × Year Multiplier
+                            </code>
+                            <p className="text-xs text-gray-600 mt-2">
+                              Adoption rate is capped at 35% maximum. Higher marketing investment (vs rewards)
+                              increases adoption rate more quickly.
+                            </p>
+                          </div>
+                        </div>
+
+                        <div>
+                          <h4 className="font-semibold mb-2">4. Program Costs</h4>
+                          <div className="bg-white p-3 rounded border-l-4 border-orange-500">
+                            <ul className="text-xs space-y-2">
+                              <li><strong>Rewards:</strong> Program Budget × Rewards Allocation% × Inflation (3%/year)</li>
+                              <li><strong>Marketing:</strong> Program Budget × (100 - Rewards Allocation)% × Inflation</li>
+                              <li><strong>Operational:</strong> Program Budget × 10% × Inflation</li>
+                              <li><strong>Technical CAPEX:</strong> $20,000 base + $10,000 per $10M revenue tier</li>
+                            </ul>
+                          </div>
+                        </div>
+
+                        <div>
+                          <h4 className="font-semibold mb-2">5. ROI & Payback Period</h4>
+                          <div className="bg-white p-3 rounded border-l-4 border-red-500">
+                            <code className="text-xs font-mono block mb-2">
+                              Annual ROI = (Net Profit / Total Costs) × 100
+                            </code>
+                            <code className="text-xs font-mono block mb-2">
+                              Net Profit = Incremental Revenue - (Rewards + Marketing + Operational + CAPEX)
+                            </code>
+                            <p className="text-xs text-gray-600 mt-2">
+                              Payback period is calculated month by month until cumulative profit becomes positive.
+                            </p>
+                          </div>
+                        </div>
+
+                        <div>
+                          <h4 className="font-semibold mb-2">6. Success Probability</h4>
+                          <div className="bg-white p-3 rounded border-l-4 border-indigo-500">
+                            <p className="text-xs text-gray-600 mb-2">
+                              Starting baseline: <strong>63%</strong> (average satisfaction rate of loyalty programs per studies)
+                            </p>
+                            <div className="text-xs space-y-1">
+                              <div><strong>Budget Adjustments:</strong></div>
+                              <ul className="ml-4 list-disc">
+                                <li>&lt;2% Revenue: -10 points (under-investment)</li>
+                                <li>2-4% Revenue: +12 points (optimal)</li>
+                                <li>4-6% Revenue: +15 points (ambitious)</li>
+                                <li>&gt;6% Revenue: +8 points (aggressive but risky)</li>
+                              </ul>
+                              <div className="mt-2"><strong>Allocation Adjustments:</strong></div>
+                              <ul className="ml-4 list-disc">
+                                <li>50-70% Rewards: +10 points (balanced)</li>
+                                <li>&lt;50% Rewards: +5 points (marketing focus)</li>
+                                <li>&gt;70% Rewards: +3 points (direct impact focus)</li>
+                              </ul>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Sources */}
+                    <div>
+                      <h3 className="text-sm font-semibold mb-3 text-[#00B88D]">📚 Sources & References</h3>
+                      <div className="bg-blue-50 p-4 rounded-lg">
+                        <div className="space-y-3 text-sm">
+                          <div>
+                            <h4 className="font-semibold mb-1">LoyaltyLion 2024 - Consumer Loyalty Report</h4>
+                            <ul className="text-xs text-gray-600 ml-4 list-disc space-y-1">
+                              <li><strong>+39%</strong> increase in average basket when using rewards</li>
+                              <li><strong>+73%</strong> purchase frequency for active members vs non-members</li>
+                              <li>Database: 15,000+ retailers, 600M+ transactions analyzed</li>
+                            </ul>
+                          </div>
+
+                          <div>
+                            <h4 className="font-semibold mb-1">McKinsey & Company - Loyalty Programs Research</h4>
+                            <ul className="text-xs text-gray-600 ml-4 list-disc space-y-1">
+                              <li><strong>12-18%</strong> annual revenue growth for members vs non-members</li>
+                              <li>Optimal adoption rate: 25-35% of customer base to maximize ROI</li>
+                              <li>Recommended program budget: 2-6% of revenue depending on sector</li>
+                            </ul>
+                          </div>
+
+                          <div>
+                            <h4 className="font-semibold mb-1">BCG 2024 - True Value of Loyalty Programs</h4>
+                            <ul className="text-xs text-gray-600 ml-4 list-disc space-y-1">
+                              <li><strong>63%</strong> of loyalty programs generate positive ROI</li>
+                              <li>Optimal allocation: 50-70% rewards, 30-50% marketing & activation</li>
+                              <li>Average payback period: 14-18 months for well-executed programs</li>
+                            </ul>
+                          </div>
+
+                          <div>
+                            <h4 className="font-semibold mb-1">OpenLoyalty - Industry Benchmarks 2024</h4>
+                            <ul className="text-xs text-gray-600 ml-4 list-disc space-y-1">
+                              <li>Operational costs: 8-12% of program budget</li>
+                              <li>Technical CAPEX: $15-25k base + scalability by volume</li>
+                              <li>Retention rate: 35-50% progression over 3 years</li>
+                            </ul>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Assumptions */}
+                    <div>
+                      <h3 className="text-sm font-semibold mb-3 text-[#00B88D]">⚙️ Model Assumptions</h3>
+                      <div className="bg-yellow-50 p-4 rounded-lg">
+                        <ul className="text-sm space-y-2">
+                          <li className="flex items-start gap-2">
+                            <span className="text-yellow-600 font-bold">•</span>
+                            <span><strong>Inflation:</strong> 3% annual applied to costs (rewards, marketing, operational)</span>
+                          </li>
+                          <li className="flex items-start gap-2">
+                            <span className="text-yellow-600 font-bold">•</span>
+                            <span><strong>Progressive adoption:</strong> Impacts increase over 3 years (50% → 75% → 100% of potential)</span>
+                          </li>
+                          <li className="flex items-start gap-2">
+                            <span className="text-yellow-600 font-bold">•</span>
+                            <span><strong>Retention:</strong> Increases from 35% (Year 1) to 50% (Year 3)</span>
+                          </li>
+                          <li className="flex items-start gap-2">
+                            <span className="text-yellow-600 font-bold">•</span>
+                            <span><strong>Fixed CAPEX:</strong> Constant annual technical investment (no evolution costs)</span>
+                          </li>
+                          <li className="flex items-start gap-2">
+                            <span className="text-yellow-600 font-bold">•</span>
+                            <span><strong>Revenue consistency:</strong> Parameters automatically adjust to maintain Revenue = Customers × Basket × Frequency</span>
+                          </li>
+                          <li className="flex items-start gap-2">
+                            <span className="text-yellow-600 font-bold">•</span>
+                            <span><strong>Active members:</strong> Calculated as Customers × Adoption Rate</span>
+                          </li>
+                        </ul>
+                      </div>
+                    </div>
+
+                    {/* Disclaimer */}
+                    <div className="bg-gray-100 p-4 rounded-lg border-l-4 border-gray-400">
+                      <p className="text-xs text-gray-600 leading-relaxed">
+                        <strong>Important Note:</strong> This simulator provides estimates based on market averages and statistical
+                        studies. Actual results may vary depending on your industry, customer type, program execution quality,
+                        and economic conditions. We recommend using these projections as a starting point for your analysis
+                        and adjusting parameters according to your specific context. For personalized analysis,
+                        contact our sales team.
+                      </p>
+                    </div>
+                  </div>
+                </Card>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default App;
